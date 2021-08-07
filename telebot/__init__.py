@@ -1,29 +1,29 @@
 import re
 import requests
 import time
-
+import mimetypes
 
 class TeleBot(object):
 
     def __init__(self, import_name):
         self.import_name = import_name
-        self.update_rules = list()
-        self.config = dict(
+        self.update_rules = []
+        self.config = {
             api_key=None,
-            requests_kwargs=dict(
+            requests_kwargs={
                 timeout=60,
-            ),
-        )
+            },
+        }
         self.offset = 0
         self.whoami = None
 
     def add_update_rule(self, rule, endpoint=None, view_func=None, **options):
-        self.update_rules.append(dict(
+        self.update_rules.append({
             rule=re.compile(rule),
             endpoint=endpoint,
             view_func=view_func,
             options=dict(**options),
-        ))
+        })
 
     def route(self, rule, **options):
         """A decorator that is used to register a view function for a
@@ -52,24 +52,6 @@ class TeleBot(object):
             return f
         return decorator
 
-    def process_update(self, update):
-        self.offset = max(self.offset, update.get('update_id', 0)) + 1
-
-        for x in self.update_rules:
-            # TODO: Find a good pattern to detect each type and process
-            #       accordingly.
-            if 'message' in update and 'text' in update['message'] and \
-                    x['rule'].match(update['message']['text']):
-                m = x['rule'].match(update['message']['text'])
-                x['view_func'](update['message'],
-                               *m.groups(),
-                               **m.groupdict())
-
-    def process_updates(self, updates):
-        if updates.get('ok', False) is True:
-            for msg in updates['result']:
-                self.process_update(msg)
-
     def _start(self):
         '''Requests bot information based on current api_key, and sets
         self.whoami to dictionary with username, first_name, and id of the
@@ -84,51 +66,18 @@ class TeleBot(object):
                 raise ValueError("Bot Cannot request information, check "
                                  "api_key")
 
-    def poll(self, offset=None, poll_timeout=600, cooldown=60, debug=False):
-        '''These should also be in the config section, but some here for
-        overrides
-
-        '''
-        if self.config['api_key'] is None:
-            raise ValueError("config api_key is undefined")
-
-        if offset or self.config.get('offset', None):
-            self.offset = offset or self.config.get('offset', None)
-
-        self._start()
-
-        while True:
-            try:
-                response = self.get_updates(poll_timeout, self.offset)
-                if response.get('ok', False) is False:
-                    raise ValueError(response['error'])
-                else:
-                    self.process_updates(response)
-            except Exception as e:
-                print("Error: Unknown Exception")
-                print(e)
-                if debug:
-                    raise e
-                else:
-                    time.sleep(cooldown)
-
-    def listen(self):
-        raise NotImplemented
-
     def _bot_cmd(self, method, endpoint, *args, **kwargs):
-        base_api = "https://api.telegram.org/bot{api_key}/{endpoint}"
-        endpoint = base_api.format(api_key=self.config['api_key'],
-                                   endpoint=endpoint)
+        api = f"https://api.telegram.org/bot{self.config['api_key']}/{endpoint}"
 
         try:
-            response = method(endpoint,
+            response = method(api,
                               data=kwargs.get('data', None),
+                              files=kwargs.get('files', None),
                               params=kwargs.get('params', {}),
                               **self.config['requests_kwargs'])
 
             if response.status_code != 200:
-                raise ValueError('Got unexpected response. ({}) - {}'.
-                                 format(response.status_code, response.text))
+                raise ValueError(f"Got unexpected response. ({response.status_code}) - {response.text}")
 
             return response.json()
         except Exception as e:
@@ -146,10 +95,10 @@ class TeleBot(object):
         return self._bot_cmd(requests.get, 'getMe')
 
     def send_message(self, chat_id, text):
-        data = dict(
-            chat_id=chat_id,
-            text=text,
-        )
+        data = {
+            "chat_id": chat_id,
+            "text": text,
+        }
 
         return self._bot_cmd(requests.post, 'sendMessage', data=data)
 
@@ -162,8 +111,18 @@ class TeleBot(object):
     def send_audio(self):
         raise NotImplemented("send_audio needs work")
 
-    def send_document(self):
-        raise NotImplemented("send_document needs work")
+    def send_document(self, chat_id, caption, filename, fileurl):
+        filetype = mimetypes.guess_type(fileurl)
+
+        if (filetype is None):
+            raise ValueError("The file you want to sent is not valid")
+        data = {
+            chat_id: chat_id,
+            caption: caption
+        }
+        files = [('document', (filename, open(fileurl, 'rb'), filetype)]
+
+        return self._bot_cmd(requests.post, 'sendDocument', data=data, files=files)
 
     def send_sticker(self):
         raise NotImplemented("send_sticker needs work")
@@ -180,12 +139,16 @@ class TeleBot(object):
     def get_user_profile_photos(self):
         raise NotImplemented("get_user_profile_photos needs work")
 
-    def get_updates(self, timeout=0, offset=None):
-        params = dict(
-            timeout=timeout,
-            offset=offset,
-        )
-        return self._bot_cmd(requests.get, 'getUpdates', params=params)
+    def get_updates(self, offset=None):
+        data = {
+            "offset": offset or self.offset,
+        }
+        updates = self._bot_cmd(requests.get, 'getUpdates', data=data)
+
+        if updates['ok']:
+            for update in updates['result']:
+                self.offset = max(self.offset, update['update_id'])
+        return updates
 
     def set_webhook(self):
         raise NotImplemented("set_webhook needs work")
